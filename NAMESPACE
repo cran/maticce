@@ -1,0 +1,13 @@
+import(ape, ouch)
+
+export(informationCriterion, informationCriterion.hansenBatch)
+export(isMonophyletic, nodeDescendents, mrcaOUCH)
+export(multiModel)
+export(ouSim, ouSim.hansenBatch, ouSim.hansenSummary, ouSim.browntree, ouSim.hansentree, ouSim.ouchtree, ouSim.phylo)
+export(regimeVectors, regimeMaker, regimeMatrix, paintBranches)
+export(runBatchHansen)
+
+S3method(summary, hansenBatch)
+S3method(print, hansenSummary)
+S3method(print, informationCriterion)
+S3method(plot, ouSim)

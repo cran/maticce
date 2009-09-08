@@ -1,0 +1,1 @@
+ouSim <- function(object, ...) UseMethod('ouSim')

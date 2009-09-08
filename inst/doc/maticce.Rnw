@@ -1,0 +1,183 @@
+\documentclass{article}
+%\VignettePackage{maticce}
+% \VignetteIndexEntry{maticce: Mapping Transitions in Continuous Character Evolution}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,urlcolor=blue]{hyperref}
+\usepackage{array}
+\usepackage{color}
+\SweaveOpts{keep.source=TRUE}
+\newcommand{\code}{\texttt}
+\newcommand{\pkg}{\textsf}
+\title{Utilizing \pkg{maticce} to estimate transitions in continuous character evolution}
+\author{Andrew Hipp and Marcial Escudero}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This document provides an overview of the \pkg{maticce} package, which serves three primary purposes. First, it implements an information-theoretic approach to estimating where on a phylogeny there has been a transition in a continuous character. As currently implemented, the approach assumes that (1) such transitions are appropriately modeled as shifts in optimum / equilibrium of a character evolving according to an Ornstein-Uhlenbeck process; (2) strength of constraint / rate of evolution toward the optimum is constant over the tree, as is variance; and (3) all branches on which a change could occur are identified. These assumptions can be relaxed in future versions if needed. Second, the package provides helper functions for the \pkg{ouch} package, in which all likelihood calculations are performed. For example, the package automates the process of painting regimes (described in the \emph{Painting Regimes} section below) for the \code{hansen} function of \pkg{ouch}, specifying nodes at which the regime changes. It also provides functions for identifying most recent common ancestors and all descendents of a particular node. Users of \pkg{ouch} who want to handle large numbers of analyses may find the routines for summarizing analyses over trees and over regimes useful as well. Finally, \pkg{maticce} provides a flexible set of simulation functions for visualizing how different model parameters affect (i.e., what they 'say' about) our inference of the evolution of a continuous character on a phylogenetic tree.
+
+This document also provides a worked example of analyzing a continuous character dataset that illustrates most of the \pkg{maticce} features. Working through this example will I expect address most questions that should come up during a typical analysis.
+
+\section{Package Overview}
+
+The \pkg{maticce} package currently implements functions in the following categories:
+
+\begin{itemize}
+  \item Extracting information from \pkg{ouch}-style (S4 class \code{ouchtree}) trees
+  \item Painting regimes on a batch of \pkg{ouch}-style trees
+  \item Performing batch analyses in \pkg{ouch} over trees and over regimes
+  \item Summarizing analyses
+  \item Simulating data under explicit models for visualization purposes
+\end{itemize}
+
+Functions in the first two categories will be of general utility to \pkg{ouch} users; functions in the third category are utilized to perform analyses over trees and over models, and in the fourth to summarize these with regard to the hypothesis that there has been a shift in continuous character on a given branch of a phylogenetic tree. While these latter two categories are more specific, the functions can be easily modified to address other multiple-tree / multiple-model questions.
+
+\section{Getting started}
+
+In case you aren't familiar with \code{R}, the following commands will get you started.
+
+<<startAnalysis, fig=FALSE>>=
+library(maticce) # load maticce and required packages
+data(carex) # load dataset
+attach(carex) # attach dataset to search path
+# convert the Bayes consensus to an ouchtree object...
+ovales.tree <- ape2ouch(ovales.tree) 
+# ... then convert the first 10 trees visited in the MCMC 
+#     analysis to ouchtree objects
+trees <- lapply(ovales.bayesTrees[1:10], ape2ouch) 
+@
+
+Note that although the sample trees provided (\code{carex[['ovales.tree']]} and \code{carex[['ovales.bayesTrees']]}) are ultrametric, ultrametricity is not strictly required for most analyses in \pkg{maticce}. The simulations implemented in \code{ouSim} do, however, assume ultrametricity. Trees in the \code{carex} dataset comprise a partial phylogeny of sedges; for information about the tree, you can use \code{help(carex)} or \code{?carex} to call the help file for the dataset, which includes the reference. The data associated with this tree (\code{carex[['ovales.data']]}) are log-transformed mean chromosome data. Because the model underlying \pkg{maticce} is a generalized least squares regression model, standard assumptions about data normality apply and should be considered at the outset of any analysis.
+
+\section{Extracting information from trees}
+
+Three functions are available to extract information from an \code{ouchtree} object:
+
+\begin{itemize}
+  \item \code{isMonophyletic}: returns a \code{T} or \code{F} depending on whether the taxa identified are monophyletic on the tree provided
+  \item \code{nodeDescendents}: identifies all descendents of a given node on a tree
+  \item \code{mrcaOUCH}: identifies the most recent common ancestor of a given set of taxa
+\end{itemize}
+
+These functions can be used interactively to identify nodes on the tree for analysis. Because the batch-analysis functions in \pkg{maticce} identify nodes based on taxa (see explanation in the section on 'Performing batch analyses'), nodes are provided as a list of vectors, each vector containing all taxa descendent from the node of interest. You can generate these lists manually by typing lists of names into vectors, or you could use the following if you want to explicitly designate all taxa for each node by selecting from a list:
+
+\begin{verbatim}
+  > nodes <- list(8) # assuming you want 8 nodes
+  > for(i in 1:length(nodes)) 
+  +  nodes[[i]] <- select.list(ovales.tree@nodelabels, 
+  +  multiple = T)
+\end{verbatim}
+
+Alternatively, if you want to designate the node more quickly by just selecting the most recent common ancestor of a set of taxa:
+
+\begin{verbatim}
+  > for(i in 1:length(nodes)) {
+  +  ancestor <- 
+  +    mrcaOUCH(select.list(ovales.tree@nodelabels, multiple = T), 
+  +     ovales.tree)
+  +  nodes[[i]] <- nodeDescendents(ovales.tree, ancestor)
+  +  }
+\end{verbatim}
+
+These functions are all documented under \code{isMonophyletic}. Note that for many analyses that you might want to perform over a set of trees, you will need to determine for each tree whether each node of interest is present on the tree. There are alternative ways to do this (for example, a relatively new function in \pkg{ape} (\code{makeNodeLabel}) generates node labels by sorting and saving the descendents of each node to a file, then using \code{md5sum} to get a unique node label that uniquely identifies all the nodes in a tree with respect to its descendents. In \pkg{maticce}, node identity is checked automatically during batch analyses (see section Batch analyses below) by defining nodes based on their descendents, then checking for monophyly on each tree. For standard analyses in \pkg{maticce}, you do not have to worry about this yourself.
+
+\section{Painting regimes}
+
+In the \code{hansen} function of \pkg{ouch}, Ornstein-Uhlenbeck models are specified by specifying for each phylogenetic branch one and only one selective regime that governs the evolution of individuals that occupy that branch. In the \pkg{maticce} approach, \emph{selective regime} is an overly specific description, because the dynamics of trait evolution may shift significantly at cladogenesis for reasons that have nothing to do with natural selection. For consistency with \pkg{ouch}, the term \emph{regime} is retained in \pkg{maticce}, but it is used here to refer to the entire set of lineage-specific stationary distributions on a tree rather than the branch-specific set of selective pressures that is implied by \emph{selective regime}. Hereafter, and in the \pkg{maticce} documentation, \emph{regime} is used interchangeably for the tree-based model (the vector returned by \code{paintBranches} and visualized using \code{plot(tree, regimes=regime)}). Two functions are available for painting regimes; both return objects that may be used directly in the \code{hansen} function of \pkg{ouch}:
+
+\begin{itemize}
+  \item \code{paintBranches}: returns the single regime for character transitions occuring at all specified nodes
+  \item \code{regimeVectors}: returns all possible regimes for specified nodes, up to a maximum of \code{maxNodes} transitions
+  \item \code{regimeMaker}: returns regimes defined by a matrix, with each row specifying which nodes permit character transitions
+\end{itemize}
+
+The \code{paintBranches} function is typically called from within \code{regimeVectors}, but it can be called separately. Nodes can be designated by number or taxa; the function assumes the latter only if it receives a list to evaluate instead of a vector.
+
+<<paintingOne,fig=FALSE>>=
+ou2 <- paintBranches(list(ovales.nodes[[2]]), ovales.tree)
+@
+
+\begin{figure}[h]
+\centering
+<<ov2, fig=TRUE, width=30, height =15>>=
+plot(ovales.tree, regimes = ou2, cex = 1.2)
+@
+\caption{\code{ovales.tree} with coloring according to \code{ou2}}
+\end{figure}
+
+The regime can be used directly in a call to \code{hansen} or the \code{plot} method for an \code{ouchtree} object (Figure 1). Note that \code{paintBranches} paints the crown group designated by the taxa you give it. As written now, there is not an option to begin painting on the branch above that node (i.e., to pain the stem groups designated by your list of taxon-vectors). In practice, this is not likely to affect your conclusions. However, it might, because the Ornstein-Uhlenbeck calculations integrate over (1) the amount of time that a lineage occupies each component of the regime and (2) the amount of time elapsed since the end of each regime component. If this is important to you, write me, and we can adjust the \code{paintBranches} function to allow a mix of branch-based and node-based regime definitions.
+
+
+\section{Batch analyses}
+
+The goal of \pkg{maticce} is to make regime-definition and batch analyses of multiple models and multiple trees straightforward, so that researchers can focus on specifying their models and interpreting the results rather than on the book-keeping of running numerous analyses. The things a researcher should be thinking about are:
+
+\begin{itemize}
+  \item \emph{Which nodes are you interested in testing?} The choice of which nodes you are considering will have the strongest effect on your estimates of the support for a character transition having occurred at those nodes. This is a standard issue in model-fitting: the choice of which models to consider is the primary question once you have data in hand.
+  \item \emph{How many transitions are plausible on a single tree?} The feasibility of studying a large number of nodes is governed by how many simultaneous transitions you allow. Suppose you have 15 nodes that are of interest. Testing models that allow transitions at anywhere between zero and 15 nodes would entail testing 32,768 models. This would be too long to be feasible. Allowing changes at anywhere between zero and four nodes would entail testing a more manageable 1,941 models.
+  \item \emph{How much do you trust poorly-supported nodes? Do you want to consider them at all?} \pkg{maticce} allows you to analyze over a set of trees, e.g. trees visited in a Bayesian (MCMC) analysis or a set of bootstrap trees. The \code{summary} function will give you an estimate of the support for a transition at each node you specify, both conditioned on trees that possess that node and averaged over all trees. If you have some reason for trusting the node in spite of low support (because, for example, it holds together a morphologically coherent group), you might want to give some credence to the support value that conditions only on trees that possess that node.
+\end{itemize}
+
+<<runBatch, fig=FALSE, echo=TRUE>>=
+# First, analyze with maxNodes set to 2
+ha.4.2 <- runBatchHansen(ovales.tree, ovales.data, 
+          ovales.nodes[1:4], maxNodes = 2, brown = T)
+print(summary(ha.4.2))
+# Then, analyze with maxNodes set to 4
+ha.4.4 <- runBatchHansen(ovales.tree, ovales.data, 
+          ovales.nodes[1:4], maxNodes = 4, brown = T)
+print(summary(ha.4.4))
+# Then, assess the effects of phylogenetic uncertainty by 
+#   analyzing over a set of trees
+ha.4.2.multi <- runBatchHansen(trees, ovales.data, 
+                ovales.nodes[1:4], maxNodes = 2, brown = T)
+print(summary(ha.4.2.multi))
+@
+
+In the examples above, support for node two is relatively little affected by the value of \code{maxNodes}.
+
+\begin{figure}[h]
+\centering
+<<ouSim, fig=TRUE, width=30, height =15, echo=TRUE>>=
+ouSim.ha.4.2 <- ouSim(ha.4.2, tree = ovales.tree)
+plot(ouSim.ha.4.2, colors = ou2)
+@
+\caption{Simulated character on \code{ovales.tree} at model-averaged theta values, with coloring according to \code{ou2}}
+\end{figure}
+
+What is the relative support for the Brownian motion model, the OU model that implies no transition in character state, and the OU-2 model with a change only at node 2? We can identify models by inspecting the regime matrix; in this case, model 7 has a change only at node 2, and model 11 is the OU model with no change:
+
+<<ha, fig = FALSE, echo = TRUE>>=
+ha.4.2[['regMatrix']][['overall']]
+@
+
+Then we can find the likelihood and parameter estimates of these models on a given tree:
+
+<<haLnl, fig = FALSE, echo = TRUE>>=
+ha.4.2[['hansens']][[1]][c(7, 11, 'brown'), ]
+@
+
+or the information criterion weights:
+
+<<haWeights, fig=FALSE, echo=TRUE>>=
+summary(ha.4.2)[['modelsMatrix']][[1]][c(7, 11, 'brown'), ]
+@
+
+Considering just these models, model 7 is not overwhelmingly supported (BIC weight = 0.530, AICc weight = 0.369), but it is much more strongly supported than the Brownian motion model or the OU model with no change. This points to the utility of model-averaging as a means of localizing character transitions on a phylogenetic tree. Moreover, the fact that a character transition is strongly supported only for node 2 tells us little about whether each node, analyzed on its own, would support a character transition model over a no-transition model. In fact, in the sample data, nodes 1, 2, 3, 4, and 7 all support a transition over no-transition model. You can investigate this node-by-node using the \code{multiModel} function.
+
+<<multiModel, fig=TRUE, echo=TRUE>>=
+layout(matrix(1:9, 3, 3))
+for(i in 1:8) {   
+  mm <- multiModel(carex[['ovales.tree']], ovales.data, 
+        ovales.nodes[[i]])
+  pie(mm[['IC']][['BICwi']], labels = mm[['IC']][['names']], 
+    col = rainbow(length(mm[['IC']][['names']])), 
+    main = paste("Node",i,"BICwi"))
+  }
+@
+
+In this figure, the yellow portion of each pie-chart is the BIC weight for the OU model with no transition in stationary distribution. This no-change model receives > 5 percent support only at nodes 5, 6, and 8. The benefit of doing the global test first using \code{runBatchHansen} and related functions is that you first test, globally, whether the node you are looking at shows significantly stronger support for a transition in character state than any other selected node on the tree. Then, you can investigate alternative models using the \code{multiModel} function.
+
+\end{document}
