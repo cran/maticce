@@ -47,14 +47,14 @@ wholeModel <- function(phy, dat, model, node, parameterVector, paramHeader) {
   if(model == "ou1") analysis <- hansen(dat, 
   					phy, 
                                         regimes = structure(rep(phy@root, phy@nnodes), names = phy@nodes, levels = 1, class = 'factor'),
-                                        alpha = 1, 
+                                        sqrt.alpha = 1, 
                                         sigma = 1
                                         )
   if(model == "ou2") {
     regime <- paintBranches(list(node), phy)
     uptreeNum <- as.character(phy@root)
     downtreeNum <- as.character(unique(regime))[unique(regime) != phy@root]
-    analysis <- hansen(dat, phy, regime, alpha = 1, sigma = 1)
+    analysis <- hansen(dat, phy, regime, sqrt.alpha = 1, sigma = 1)
     }
   params <- unlist(summary(analysis)[parameterVector])[paramHeader]
   names(params) <- paramHeader
@@ -79,7 +79,7 @@ partialModel <- function(phyList, dat, model, treeNames, parameterVector = NULL,
                                                             regimes = structure(rep(1, phyList[[i]]@nnodes), 
                                                                                 names = phyList[[i]]@nodes, 
                                                                                 levels = 1, class = 'factor'),
-                                                            sigma = 1, alpha = 1)
+                                                            sigma = 1, sqrt.alpha = 1)
     } 
   names(analysis) <- treeNames
   params <- matrix(NA, nrow = length(c(treeNames, 'summed')), ncol = length(paramHeader), dimnames = list(c(treeNames, 'summed'), paramHeader))
